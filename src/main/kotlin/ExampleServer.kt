@@ -6,15 +6,14 @@ import java.util.concurrent.CompletableFuture
 import kotlin.system.exitProcess
 
 fun main() {
-    LSPLauncher
-            .createServerLauncher(ExampleServer(), System.`in`, System.out)
-            .startListening()
-            .get()
+    val server = ExampleServer()
+    val launcher = LSPLauncher.createServerLauncher(server, System.`in`, System.out)
+    server.connect(launcher.remoteProxy)
+    launcher.startListening().get()
 }
 
 class ExampleServer : LanguageServer, LanguageClientAware {
     private var errorCode: Int = 1
-    private var client: LanguageClient? = null
     private val textDocumentService = ExampleTextDocumentService()
     private val workspaceService = ExampleWorkspaceService()
 
@@ -47,12 +46,14 @@ class ExampleServer : LanguageServer, LanguageClientAware {
         return workspaceService
     }
 
-    override fun connect(client: LanguageClient?) {
-        this.client = client
+    override fun connect(client: LanguageClient) {
+        textDocumentService.client = client
     }
 }
 
 class ExampleTextDocumentService : TextDocumentService {
+    var client: LanguageClient? = null
+
     override fun completion(position: CompletionParams?): CompletableFuture<Either<MutableList<CompletionItem>, CompletionList>> {
         val item1 = CompletionItem("Racket")
         item1.data = 1
@@ -76,8 +77,31 @@ class ExampleTextDocumentService : TextDocumentService {
     override fun didClose(params: DidCloseTextDocumentParams?) {
     }
 
-    override fun didChange(params: DidChangeTextDocumentParams?) {
+    override fun didChange(params: DidChangeTextDocumentParams) {
+        client?.let { warnAllCaps(it, params) }
     }
+}
+
+// https://code.visualstudio.com/api/language-extensions/language-server-extension-guide#adding-a-simple-validation
+fun warnAllCaps(client: LanguageClient, params: DidChangeTextDocumentParams) {
+    val pattern: Regex = """\b[A-Z]{2,}\b""".toRegex()
+
+    val diagnostics = mutableListOf<Diagnostic>()
+
+    for ((index, line) in params.contentChanges[0].text.lines().withIndex()) {
+        for (match in pattern.findAll(line)) {
+            val d = Diagnostic()
+            d.severity = DiagnosticSeverity.Warning
+            val start = Position(index, match.range.first)
+            val end = Position(index, match.range.last + 1)
+            d.range = Range(start, end)
+            d.message = "${match.value} is all uppercase."
+            d.source = "ex"
+            diagnostics.add(d)
+        }
+    }
+
+    client.publishDiagnostics(PublishDiagnosticsParams(params.textDocument.uri, diagnostics))
 }
 
 class ExampleWorkspaceService : WorkspaceService {
